@@ -13,7 +13,7 @@ import ctypes as _c
 # Stable digest of the ABI surface below (structs, enums, macros, layout,
 # prototypes). A native provider package echoes this back so the API
 # package can reject an ABI-mismatched provider before dlopen.
-PUBLIC_HEADER_HASH = "f99ad4169374b8f3"
+PUBLIC_HEADER_HASH = "f5a9859d167818a9"
 
 # === enum constants ===
 TRANSCRIBE_OK = 0
@@ -147,6 +147,7 @@ TRANSCRIBE_BACKEND_MASK_VULKAN = 4
 TRANSCRIBE_EXT_KIND_MOONSHINE_STREAMING_STREAM = 1414746957
 TRANSCRIBE_EXT_KIND_PARAKEET_BUFFERED_STREAM = 1396853584
 TRANSCRIBE_EXT_KIND_PARAKEET_STREAM = 1414744912
+TRANSCRIBE_EXT_KIND_PARAKEET_VOCABULARY = 1112951632
 TRANSCRIBE_EXT_KIND_SORTFORMER_DIARIZE = 1380206163
 TRANSCRIBE_EXT_KIND_VOXTRAL_REALTIME_STREAM = 1414746710
 TRANSCRIBE_EXT_KIND_WHISPER_RUN = 1314015319
@@ -206,6 +207,8 @@ class transcribe_parakeet_stream_ext(_c.Structure):
     pass
 class transcribe_parakeet_buffered_stream_ext(_c.Structure):
     pass
+class transcribe_parakeet_vocabulary_ext(_c.Structure):
+    pass
 class transcribe_sortformer_diarize_ext(_c.Structure):
     pass
 class transcribe_vad_info(_c.Structure):
@@ -252,6 +255,7 @@ transcribe_langid_candidate._fields_ = [("struct_size", _c.c_uint64), ("index", 
 transcribe_moonshine_streaming_stream_ext._fields_ = [("ext", transcribe_ext), ("min_decode_interval_ms", _c.c_int32)]
 transcribe_parakeet_stream_ext._fields_ = [("ext", transcribe_ext), ("att_context_right", _c.c_int32)]
 transcribe_parakeet_buffered_stream_ext._fields_ = [("ext", transcribe_ext), ("left_ms", _c.c_int32), ("chunk_ms", _c.c_int32), ("right_ms", _c.c_int32)]
+transcribe_parakeet_vocabulary_ext._fields_ = [("ext", transcribe_ext), ("boost", _c.c_float), ("sounds_like", _c.POINTER(_c.c_char_p)), ("sounds_like_term", _c.POINTER(_c.c_int32)), ("n_sounds_like", _c.c_int32)]
 transcribe_sortformer_diarize_ext._fields_ = [("ext", transcribe_ext), ("preset", _c.c_int)]
 transcribe_vad_info._fields_ = [("struct_size", _c.c_uint64), ("sample_rate", _c.c_int32), ("frame_samples", _c.c_int32)]
 transcribe_vad_session_params._fields_ = [("struct_size", _c.c_uint64), ("n_threads", _c.c_int32)]
@@ -325,6 +329,7 @@ STRUCT_LAYOUT = {
     'transcribe_moonshine_streaming_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'min_decode_interval_ms': 16}},
     'transcribe_parakeet_stream_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'att_context_right': 16}},
     'transcribe_parakeet_buffered_stream_ext': {'size': 32, 'align': 8, 'offsets': {'ext': 0, 'left_ms': 16, 'chunk_ms': 20, 'right_ms': 24}},
+    'transcribe_parakeet_vocabulary_ext': {'size': 48, 'align': 8, 'offsets': {'ext': 0, 'boost': 16, 'sounds_like': 24, 'sounds_like_term': 32, 'n_sounds_like': 40}},
     'transcribe_sortformer_diarize_ext': {'size': 24, 'align': 8, 'offsets': {'ext': 0, 'preset': 16}},
     'transcribe_vad_info': {'size': 16, 'align': 8, 'offsets': {'struct_size': 0, 'sample_rate': 8, 'frame_samples': 12}},
     'transcribe_vad_session_params': {'size': 16, 'align': 8, 'offsets': {'struct_size': 0, 'n_threads': 8}},
@@ -515,6 +520,8 @@ def configure(lib):
     lib.transcribe_parakeet_buffered_stream_ext_init.argtypes = [_c.POINTER(transcribe_parakeet_buffered_stream_ext)]
     lib.transcribe_parakeet_stream_ext_init.restype = None
     lib.transcribe_parakeet_stream_ext_init.argtypes = [_c.POINTER(transcribe_parakeet_stream_ext)]
+    lib.transcribe_parakeet_vocabulary_ext_init.restype = None
+    lib.transcribe_parakeet_vocabulary_ext_init.argtypes = [_c.POINTER(transcribe_parakeet_vocabulary_ext)]
     lib.transcribe_print_timings.restype = None
     lib.transcribe_print_timings.argtypes = [_c.c_void_p]
     lib.transcribe_raw_text.restype = _c.c_char_p
@@ -529,6 +536,8 @@ def configure(lib):
     lib.transcribe_run_batch.argtypes = [_c.c_void_p, _c.POINTER(_c.POINTER(_c.c_float)), _c.POINTER(_c.c_int), _c.c_int, _c.POINTER(transcribe_run_params)]
     lib.transcribe_run_params_init.restype = None
     lib.transcribe_run_params_init.argtypes = [_c.POINTER(transcribe_run_params)]
+    lib.transcribe_run_with_metal_command_buffers.restype = _c.c_int
+    lib.transcribe_run_with_metal_command_buffers.argtypes = [_c.c_void_p, _c.POINTER(_c.c_float), _c.c_int, _c.POINTER(transcribe_run_params), _c.c_int]
     lib.transcribe_segment_init.restype = None
     lib.transcribe_segment_init.argtypes = [_c.POINTER(transcribe_segment)]
     lib.transcribe_session_free.restype = None

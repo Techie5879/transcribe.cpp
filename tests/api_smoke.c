@@ -500,6 +500,13 @@ static void test_run_invalid(void) {
     float pcm[8] = { 0.0f };
 
     CHECK(transcribe_run(NULL, pcm, 8, &rp) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_run_with_metal_command_buffers(NULL, pcm, 8, &rp, 8) == TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_run_with_metal_command_buffers((struct transcribe_session *) 0x1, NULL, 8, &rp, 8) ==
+          TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_run_with_metal_command_buffers((struct transcribe_session *) 0x1, pcm, 8, &rp, -1) ==
+          TRANSCRIBE_ERR_INVALID_ARG);
+    CHECK(transcribe_run_with_metal_command_buffers((struct transcribe_session *) 0x1, pcm, 8, &rp, 9) ==
+          TRANSCRIBE_ERR_INVALID_ARG);
     CHECK(transcribe_run((struct transcribe_session *) 0x1, NULL, 8, &rp) == TRANSCRIBE_ERR_INVALID_ARG);
     /* NULL params is no longer an error (means "all defaults"), so it
      * can't be probed with a fake session — it would proceed to

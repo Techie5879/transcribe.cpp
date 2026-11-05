@@ -32,6 +32,7 @@ void ggml_metal_event_wait  (ggml_metal_t ctx, ggml_metal_event_t ev);
 ggml_metal_event_t ggml_metal_get_ev_cpy(ggml_metal_t ctx);
 
 void ggml_metal_set_n_cb            (ggml_metal_t ctx, int n_cb);
+int  ggml_metal_get_n_cb            (ggml_metal_t ctx);
 void ggml_metal_set_abort_callback  (ggml_metal_t ctx, ggml_abort_callback abort_callback, void * user_data);
 
 bool ggml_metal_supports_family     (ggml_metal_t ctx, int family);

@@ -25,6 +25,21 @@ typedef struct ggml_backend_device * ggml_backend_dev_t;
 
 namespace transcribe {
 
+// One synchronous run may trade throughput for shorter Metal submissions.
+// The caller serializes access to the model. Non-Metal backends are unchanged.
+// The prior setting is restored on every exit, including aborts and exceptions.
+class MetalCommandBufferScope {
+    ggml_backend_t backend_               = nullptr;
+    void (*restore_)(ggml_backend_t, int) = nullptr;
+    int previous_                         = 0;
+
+  public:
+    MetalCommandBufferScope(ggml_backend_t backend, int count);
+    ~MetalCommandBufferScope() noexcept;
+    MetalCommandBufferScope(const MetalCommandBufferScope &)             = delete;
+    MetalCommandBufferScope & operator=(const MetalCommandBufferScope &) = delete;
+};
+
 // Library-internal classification from the ggml backend device type plus
 // registry name. Only the kinds the library branches on are listed; anything
 // else is Unknown.

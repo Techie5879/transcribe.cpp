@@ -1707,3 +1707,10 @@ if(TRANSCRIBE_BUILD_EXAMPLES)
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cli_langid_smoke.cmake)
     endif()
 endif()
+
+# The per-run Metal hint restores state and is inert on other backends.
+add_executable(transcribe_metal_scheduling_unit metal_scheduling_unit.cpp)
+target_link_libraries(transcribe_metal_scheduling_unit PRIVATE transcribe ggml)
+target_include_directories(transcribe_metal_scheduling_unit PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/ggml/src)
+transcribe_apply_warnings(transcribe_metal_scheduling_unit)
+add_test(NAME transcribe_metal_scheduling_unit COMMAND transcribe_metal_scheduling_unit)

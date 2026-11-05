@@ -1710,6 +1710,21 @@ TRANSCRIBE_API transcribe_status transcribe_run(struct transcribe_session *     
                                                 int                                  n_samples,
                                                 const struct transcribe_run_params * params);
 
+/*
+ * Synchronous run with a temporary Metal command-buffer partition count.
+ * 0 keeps the backend's setting; 1..8 splits the compute graph to give other
+ * GPU clients more scheduling opportunities, potentially reducing throughput.
+ * Non-Metal backends ignore the hint. The previous setting is restored before
+ * returning, including failure and cancellation. As with transcribe_run, the
+ * caller must serialize all compute using this model. Batch and stream entry
+ * points are unaffected. Does not change the model or numerical operations.
+ */
+TRANSCRIBE_API transcribe_status transcribe_run_with_metal_command_buffers(struct transcribe_session * session,
+                                                                           const float *               pcm,
+                                                                           int                         n_samples,
+                                                                           const struct transcribe_run_params * params,
+                                                                           int command_buffers);
+
 /* ----------------------------------------------------------------------- */
 /* Batch run (offline)                                                     */
 /* ----------------------------------------------------------------------- */

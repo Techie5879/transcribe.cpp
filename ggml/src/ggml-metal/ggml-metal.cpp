@@ -587,6 +587,11 @@ static void ggml_backend_metal_set_n_cb(ggml_backend_t backend, int n_cb) {
     ggml_metal_set_n_cb(ctx, n_cb);
 }
 
+static int ggml_backend_metal_get_n_cb(ggml_backend_t backend) {
+    GGML_ASSERT(ggml_backend_is_metal(backend));
+    return ggml_metal_get_n_cb((ggml_metal_t)backend->context);
+}
+
 static ggml_backend_i ggml_backend_metal_i = {
     /* .get_name                = */ ggml_backend_metal_name,
     /* .free                    = */ ggml_backend_metal_free,
@@ -948,6 +953,12 @@ static void ggml_backend_metal_fusion_set_enabled(ggml_backend_fusion_t finfo, b
 }
 
 static void * ggml_backend_metal_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    if (strcmp(name, "ggml_backend_metal_get_n_cb") == 0) {
+        return (void *)ggml_backend_metal_get_n_cb;
+    }
+    if (strcmp(name, "ggml_backend_metal_set_n_cb") == 0) {
+        return (void *)ggml_backend_metal_set_n_cb;
+    }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_metal_get_features;
     }
