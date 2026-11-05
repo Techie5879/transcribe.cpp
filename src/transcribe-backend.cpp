@@ -59,9 +59,16 @@ MetalCommandBufferScope::~MetalCommandBufferScope() noexcept {
     if (restore_ != nullptr) {
         try {
             ggml_backend_synchronize(backend_);
-            restore_(backend_, previous_);
         } catch (...) {
             // No backend exception may cross a C ABI teardown boundary.
+            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "Metal synchronization failed while restoring scheduling");
+        }
+        // Restoring the host scheduling setting is still required when the
+        // backend's synchronization fails. Do not strand later default runs
+        // on this run's temporary setting.
+        try {
+            restore_(backend_, previous_);
+        } catch (...) {
             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "Metal command-buffer setting could not be restored");
         }
     }

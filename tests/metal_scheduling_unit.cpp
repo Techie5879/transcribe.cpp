@@ -20,6 +20,7 @@ struct State {
     int  changes         = 0;
     int  syncs           = 0;
     bool fail_eight_once = false;
+    int  fail_sync_at    = 0;
 };
 
 const char * name(ggml_backend_reg_t reg) {
@@ -45,7 +46,10 @@ void set(ggml_backend_t backend, int count) {
 }
 
 void sync(ggml_backend_t backend) {
-    ++static_cast<State *>(backend->context)->syncs;
+    auto & state = *static_cast<State *>(backend->context);
+    if (++state.syncs == state.fail_sync_at) {
+        throw std::runtime_error("simulated synchronization failure");
+    }
 }
 
 void * proc(ggml_backend_reg_t, const char * value) {
@@ -90,6 +94,26 @@ int main() {
             CHECK(state.count == 4);
         }
         CHECK(state.count == 8);
+    }
+    CHECK(state.count == 1);
+    {
+        transcribe::MetalCommandBufferScope scope(&backend, 8);
+        state.fail_sync_at = state.syncs + 1;
+    }
+    CHECK(state.count == 1);
+    try {
+        transcribe::MetalCommandBufferScope scope(&backend, 8);
+        state.fail_sync_at = state.syncs + 1;
+        throw std::runtime_error("decode and teardown both failed");
+    } catch (const std::runtime_error &) {
+    }
+    CHECK(state.count == 1);
+    // A setup synchronization failure must leave the prior count untouched.
+    state.fail_sync_at = state.syncs + 1;
+    try {
+        transcribe::MetalCommandBufferScope scope(&backend, 8);
+        CHECK(false);
+    } catch (const std::runtime_error &) {
     }
     CHECK(state.count == 1);
     state.fail_eight_once = true;
