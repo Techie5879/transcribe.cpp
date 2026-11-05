@@ -19,6 +19,54 @@
 
 namespace transcribe {
 
+MetalCommandBufferScope::MetalCommandBufferScope(ggml_backend_t backend, int count) {
+    if (count == 0 || backend == nullptr) {
+        return;
+    }
+    const auto dev = ggml_backend_get_device(backend);
+    if (dev == nullptr || classify_device(dev) != BackendKind::Metal) {
+        return;
+    }
+    const auto reg = ggml_backend_dev_backend_reg(dev);
+    const auto get = reinterpret_cast<int (*)(ggml_backend_t)>(
+        ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_get_n_cb"));
+    const auto set = reinterpret_cast<void (*)(ggml_backend_t, int)>(
+        ggml_backend_reg_get_proc_address(reg, "ggml_backend_metal_set_n_cb"));
+    if (get == nullptr || set == nullptr) {
+        return;
+    }
+    const int previous = get(backend);
+    if (previous == count) {
+        return;
+    }
+    ggml_backend_synchronize(backend);
+    backend_  = backend;
+    restore_  = set;
+    previous_ = previous;
+    try {
+        set(backend, count);
+    } catch (...) {
+        try {
+            restore_(backend_, previous_);
+        } catch (...) {
+            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "Metal command-buffer setting could not be restored");
+        }
+        throw;
+    }
+}
+
+MetalCommandBufferScope::~MetalCommandBufferScope() noexcept {
+    if (restore_ != nullptr) {
+        try {
+            ggml_backend_synchronize(backend_);
+            restore_(backend_, previous_);
+        } catch (...) {
+            // No backend exception may cross a C ABI teardown boundary.
+            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "Metal command-buffer setting could not be restored");
+        }
+    }
+}
+
 const char * kind_name(BackendKind kind) {
     switch (kind) {
         case BackendKind::Cpu:

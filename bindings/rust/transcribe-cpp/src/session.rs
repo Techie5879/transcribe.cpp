@@ -169,12 +169,40 @@ impl Session {
     /// transcript is preserved on the returned [`Error::Aborted`] /
     /// [`Error::OutputTruncated`] / [`Error::OutputRepetition`].
     pub fn run(&mut self, pcm: &[f32], options: &RunOptions) -> Result<Transcript> {
+        self.run_with_metal_command_buffers(pcm, options, 0)
+    }
+
+    /// Run with a temporary Metal graph partition count, restored even on error.
+    /// 0 keeps the backend setting; 1..8 can improve UI responsiveness at a
+    /// throughput cost. Other backends ignore the hint. Uses the same per-model
+    /// compute lock, cancellation and transcript handling as [`Self::run`].
+    pub fn run_with_metal_command_buffers(
+        &mut self,
+        pcm: &[f32],
+        options: &RunOptions,
+        command_buffers: u32,
+    ) -> Result<Transcript> {
         let (params, _lang, _target, _family, _prompting) = build_run_params(options)?;
         let n = clamp_len(pcm.len())?;
 
+        if command_buffers > 8 {
+            return Err(error_for_status(
+                sys::transcribe_status::TRANSCRIBE_ERR_INVALID_ARG,
+                "Metal command buffers",
+            ));
+        }
+
         let status = self.model.with_compute(
             Some("a stream is active on this model; finish or drop it before run()"),
-            |_| unsafe { sys::transcribe_run(self.ptr, pcm.as_ptr(), n, &params) },
+            |_| unsafe {
+                sys::transcribe_run_with_metal_command_buffers(
+                    self.ptr,
+                    pcm.as_ptr(),
+                    n,
+                    &params,
+                    command_buffers as i32,
+                )
+            },
         )?;
 
         match status {

@@ -705,6 +705,10 @@ ggml_metal_event_t ggml_metal_get_ev_cpy(ggml_metal_t ctx) {
     return ctx->ev_cpy;
 }
 
+int ggml_metal_get_n_cb(ggml_metal_t ctx) {
+    return ctx->n_cb;
+}
+
 void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
     // when fusion stats are collected the graph must be encoded by a single thread so the
     // counters are race-free; override whatever the caller requested

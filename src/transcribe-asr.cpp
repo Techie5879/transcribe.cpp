@@ -18,6 +18,7 @@
 #include "transcribe-abi.h"
 #include "transcribe-api-guard.h"
 #include "transcribe-arch.h"
+#include "transcribe-backend.h"
 #include "transcribe-batch-util.h"
 #include "transcribe-log.h"
 #include "transcribe-model.h"
@@ -1336,7 +1337,8 @@ static transcribe_status run_one_inner(struct transcribe_session *          sess
                                        const float *                        pcm,
                                        int                                  n_samples,
                                        const struct transcribe_run_params * params,
-                                       bool *                               committed = nullptr) {
+                                       bool *                               committed             = nullptr,
+                                       int                                  metal_command_buffers = 0) {
     // Parameter-shape validation runs first and does not touch session
     // state. A caller that passes NULL pointers or a non-positive sample
     // count gets ERR_INVALID_ARG back without any visible side effect
@@ -1476,13 +1478,15 @@ static transcribe_status run_one_inner(struct transcribe_session *          sess
         return TRANSCRIBE_ERR_NOT_IMPLEMENTED;
     }
 
+    transcribe::MetalCommandBufferScope scheduling(session->model->primary_backend, metal_command_buffers);
     return session->model->arch->run(session, pcm, n_samples, params);
 }
 
 static transcribe_status transcribe_run_impl(struct transcribe_session *          session,
                                              const float *                        pcm,
                                              int                                  n_samples,
-                                             const struct transcribe_run_params * params) {
+                                             const struct transcribe_run_params * params,
+                                             int                                  metal_command_buffers = 0) {
     // A well-formed single run has the same result view as a one-item batch:
     // reset batch_results so the transcribe_batch_* accessors fall back to
     // reading the scratch slot as utterance 0.
@@ -1504,7 +1508,7 @@ static transcribe_status transcribe_run_impl(struct transcribe_session *        
     // throw) always does.
     transcribe::ScratchReleaseGuard scratch_release;
     scratch_release.session = session;
-    return run_one_inner(session, pcm, n_samples, params, &scratch_release.armed);
+    return run_one_inner(session, pcm, n_samples, params, &scratch_release.armed, metal_command_buffers);
 }
 
 // Batch run (offline)
@@ -2353,6 +2357,18 @@ extern "C" transcribe_status transcribe_run(struct transcribe_session *         
                                             int                                  n_samples,
                                             const struct transcribe_run_params * params) {
     return api_guard_status("transcribe_run", [&] { return transcribe_run_impl(session, pcm, n_samples, params); });
+}
+
+extern "C" transcribe_status transcribe_run_with_metal_command_buffers(struct transcribe_session *          session,
+                                                                       const float *                        pcm,
+                                                                       int                                  n_samples,
+                                                                       const struct transcribe_run_params * params,
+                                                                       int command_buffers) {
+    if (command_buffers < 0 || command_buffers > 8) {
+        return TRANSCRIBE_ERR_INVALID_ARG;
+    }
+    return api_guard_status("transcribe_run_with_metal_command_buffers",
+                            [&] { return transcribe_run_impl(session, pcm, n_samples, params, command_buffers); });
 }
 
 extern "C" transcribe_status transcribe_run_batch(struct transcribe_session *          session,

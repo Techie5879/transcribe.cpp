@@ -11,7 +11,7 @@
 // Stable digest of the ABI surface (structs, enums, macros, layout,
 // prototypes), computed by the Python oracle and pinned here so a header
 // ABI change turns this binding's drift check red for conscious review.
-export const PUBLIC_HEADER_HASH = "f99ad4169374b8f3";
+export const PUBLIC_HEADER_HASH = "f5a9859d167818a9";
 
 // === enum constants ===
 export const TRANSCRIBE_OK = 0;
@@ -145,6 +145,7 @@ export const TRANSCRIBE_BACKEND_MASK_VULKAN = 4;
 export const TRANSCRIBE_EXT_KIND_MOONSHINE_STREAMING_STREAM = 1414746957;
 export const TRANSCRIBE_EXT_KIND_PARAKEET_BUFFERED_STREAM = 1396853584;
 export const TRANSCRIBE_EXT_KIND_PARAKEET_STREAM = 1414744912;
+export const TRANSCRIBE_EXT_KIND_PARAKEET_VOCABULARY = 1112951632;
 export const TRANSCRIBE_EXT_KIND_SORTFORMER_DIARIZE = 1380206163;
 export const TRANSCRIBE_EXT_KIND_VOXTRAL_REALTIME_STREAM = 1414746710;
 export const TRANSCRIBE_EXT_KIND_WHISPER_RUN = 1314015319;
@@ -178,6 +179,7 @@ export const STRUCT_LAYOUT: Record<string, StructLayout> = {
   'transcribe_moonshine_streaming_stream_ext': { size: 24, align: 8, offsets: {'ext': 0, 'min_decode_interval_ms': 16} },
   'transcribe_parakeet_stream_ext': { size: 24, align: 8, offsets: {'ext': 0, 'att_context_right': 16} },
   'transcribe_parakeet_buffered_stream_ext': { size: 32, align: 8, offsets: {'ext': 0, 'left_ms': 16, 'chunk_ms': 20, 'right_ms': 24} },
+  'transcribe_parakeet_vocabulary_ext': { size: 48, align: 8, offsets: {'ext': 0, 'boost': 16, 'sounds_like': 24, 'sounds_like_term': 32, 'n_sounds_like': 40} },
   'transcribe_sortformer_diarize_ext': { size: 24, align: 8, offsets: {'ext': 0, 'preset': 16} },
   'transcribe_vad_info': { size: 16, align: 8, offsets: {'struct_size': 0, 'sample_rate': 8, 'frame_samples': 12} },
   'transcribe_vad_session_params': { size: 16, align: 8, offsets: {'struct_size': 0, 'n_threads': 8} },
@@ -251,6 +253,7 @@ export function defineTypes(koffi: any): Record<string, any> {
   T['transcribe_moonshine_streaming_stream_ext'] = koffi.struct({ ext: T['transcribe_ext'], min_decode_interval_ms: 'int32_t' });
   T['transcribe_parakeet_stream_ext'] = koffi.struct({ ext: T['transcribe_ext'], att_context_right: 'int32_t' });
   T['transcribe_parakeet_buffered_stream_ext'] = koffi.struct({ ext: T['transcribe_ext'], left_ms: 'int32_t', chunk_ms: 'int32_t', right_ms: 'int32_t' });
+  T['transcribe_parakeet_vocabulary_ext'] = koffi.struct({ ext: T['transcribe_ext'], boost: 'float', sounds_like: 'void *', sounds_like_term: 'void *', n_sounds_like: 'int32_t' });
   T['transcribe_sortformer_diarize_ext'] = koffi.struct({ ext: T['transcribe_ext'], preset: 'int' });
   T['transcribe_vad_info'] = koffi.struct({ struct_size: 'uint64_t', sample_rate: 'int32_t', frame_samples: 'int32_t' });
   T['transcribe_vad_session_params'] = koffi.struct({ struct_size: 'uint64_t', n_threads: 'int32_t' });
@@ -353,6 +356,7 @@ export const FUNCTION_SIGNATURES: Record<string, FnSig> = {
   'transcribe_open': { ret: 'transcribe_status', args: ['const char *', 'const struct transcribe_model_load_params *', 'const struct transcribe_session_params *', 'struct transcribe_session **'] },
   'transcribe_parakeet_buffered_stream_ext_init': { ret: 'void', args: ['struct transcribe_parakeet_buffered_stream_ext *'] },
   'transcribe_parakeet_stream_ext_init': { ret: 'void', args: ['struct transcribe_parakeet_stream_ext *'] },
+  'transcribe_parakeet_vocabulary_ext_init': { ret: 'void', args: ['struct transcribe_parakeet_vocabulary_ext *'] },
   'transcribe_print_timings': { ret: 'void', args: ['const struct transcribe_session *'] },
   'transcribe_raw_text': { ret: 'const char *', args: ['const struct transcribe_session *'] },
   'transcribe_reset_timings': { ret: 'void', args: ['struct transcribe_session *'] },
@@ -360,6 +364,7 @@ export const FUNCTION_SIGNATURES: Record<string, FnSig> = {
   'transcribe_run': { ret: 'transcribe_status', args: ['struct transcribe_session *', 'const float *', 'int', 'const struct transcribe_run_params *'] },
   'transcribe_run_batch': { ret: 'transcribe_status', args: ['struct transcribe_session *', 'const float *const *', 'const int *', 'int', 'const struct transcribe_run_params *'] },
   'transcribe_run_params_init': { ret: 'void', args: ['struct transcribe_run_params *'] },
+  'transcribe_run_with_metal_command_buffers': { ret: 'transcribe_status', args: ['struct transcribe_session *', 'const float *', 'int', 'const struct transcribe_run_params *', 'int'] },
   'transcribe_segment_init': { ret: 'void', args: ['struct transcribe_segment *'] },
   'transcribe_session_free': { ret: 'void', args: ['struct transcribe_session *'] },
   'transcribe_session_get_limits': { ret: 'transcribe_status', args: ['const struct transcribe_session *', 'struct transcribe_session_limits *'] },
