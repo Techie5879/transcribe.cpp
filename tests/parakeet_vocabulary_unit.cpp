@@ -88,6 +88,29 @@ int main() {
         b.spellings.push_back({ "kid", 0 });
         const auto cs = pv::find_vocabulary_candidates(words({ "a", "kid", "said" }), b);
         check(has(cs, 1, 2, 0) && cs.front().rank == 0.0f, "a sounds-like spelling matches first");
+        check(cs.front().spelling, "a sounds-like spelling is flagged");
+        check(pv::vocabulary_span_matches_spelling(b, 0, "kid"), "the helper finds the spelling");
+        check(!pv::vocabulary_span_matches_spelling(b, 0, "kidney"), "the helper rejects another word");
+        check(!pv::vocabulary_span_matches_spelling(b, 1, "kid"), "the helper is per term");
+    }
+    {
+        // A fuzzy match is not a declared spelling and keeps the acoustic
+        // comparison; a one-letter spelling is too weak to force either.
+        auto b = bias({ "Wazuh" });
+        b.spellings.push_back({ "waso", 0 });
+        const auto exact = pv::find_vocabulary_candidates(words({ "the", "waso", "log" }), b);
+        check(has(exact, 1, 2, 0) && exact.front().spelling, "an exact spelling candidate is flagged");
+        const auto fuzzy = pv::find_vocabulary_candidates(words({ "the", "wasu", "log" }), b);
+        check(has(fuzzy, 1, 2, 0) && !fuzzy.front().spelling, "a fuzzy candidate is not flagged");
+
+        b.spellings.push_back({ "w", 0 });
+        check(!pv::vocabulary_span_matches_spelling(b, 0, "w"), "a one-letter spelling does not match");
+        const auto one    = pv::find_vocabulary_candidates(words({ "the", "w", "log" }), b);
+        bool       forced = false;
+        for (const auto & c : one) {
+            forced = forced || c.spelling;
+        }
+        check(!forced, "a one-letter spelling is never forced");
     }
     {
         // Case alone is not rescored; a split is.
@@ -154,6 +177,17 @@ int main() {
         check(pv::classify_vocabulary_span(words({ "The", "moonshine" }), b, 4) == -1, "swallowed neighbour rejected");
         check(pv::classify_vocabulary_span(words({ "opencode.ai" }), b, 1) == -1, "domain rejected");
         check(pv::classify_vocabulary_span(words({ "the", "avatar" }), b, 0) == -1, "swallowed article rejected");
+    }
+    {
+        // Exact spellings are a distinct class so the tree path replaces
+        // them without the acoustic comparison; fuzzy matches are not.
+        auto b = bias({ "Wazuh" });
+        b.spellings.push_back({ "waso", 0 });
+        check(pv::classify_vocabulary_span(words({ "waso" }), b, 0) == pv::k_vocab_span_spelling,
+              "spelling match is a forced class");
+        check(pv::classify_vocabulary_span(words({ "wasu" }), b, 0) == 1, "fuzzy match keeps full boost");
+        b.spellings.push_back({ "w", 0 });
+        check(pv::classify_vocabulary_span(words({ "w" }), b, 0) == 0, "one-letter spelling is not forced");
     }
 
     if (g_failures != 0) {

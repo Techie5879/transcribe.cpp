@@ -357,6 +357,15 @@ std::vector<VocabularyWord> vocabulary_words(const Tokenizer & tok, const std::v
     return words;
 }
 
+bool vocabulary_span_matches_spelling(const VocabularyBias & bias, int term_index, const std::string & letters) {
+    for (const VocabularySpelling & s : bias.spellings) {
+        if (s.term == term_index && s.letters.size() >= 2 && s.letters == letters) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<VocabularyWord> & words,
                                                             const VocabularyBias &              bias) {
     std::vector<VocabularyCandidate> out;
@@ -389,10 +398,8 @@ std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<Vo
     // How close the span's letters are to term t (lower is closer), or -1.
     auto rank_of = [&](const std::string & letters, int t) -> float {
         const VocabularyTerm & term = bias.terms[static_cast<size_t>(t)];
-        for (const VocabularySpelling & s : bias.spellings) {
-            if (s.term == t && s.letters == letters) {
-                return 0.0f;
-            }
+        if (vocabulary_span_matches_spelling(bias, t, letters)) {
+            return 0.0f;
         }
         if (letters == term.letters) {
             return 0.01f;
@@ -453,10 +460,11 @@ std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<Vo
                     }
                 }
                 VocabularyCandidate c;
-                c.first = words[static_cast<size_t>(a)].first;
-                c.end   = words[static_cast<size_t>(a + n - 1)].core_end;
-                c.term  = t;
-                c.rank  = rank;
+                c.first    = words[static_cast<size_t>(a)].first;
+                c.end      = words[static_cast<size_t>(a + n - 1)].core_end;
+                c.term     = t;
+                c.rank     = rank;
+                c.spelling = vocabulary_span_matches_spelling(bias, t, letters);
                 out.push_back(c);
             }
         }
@@ -519,10 +527,8 @@ int classify_vocabulary_span(const std::vector<VocabularyWord> & span_words,
         }
     }
     auto rank_of = [&](const std::string & ls) -> float {
-        for (const VocabularySpelling & s : bias.spellings) {
-            if (s.term == term_index && s.letters == ls) {
-                return 0.0f;
-            }
+        if (vocabulary_span_matches_spelling(bias, term_index, ls)) {
+            return 0.0f;
         }
         if (ls == term.letters) {
             return 0.01f;
@@ -548,6 +554,9 @@ int classify_vocabulary_span(const std::vector<VocabularyWord> & span_words,
             if ((inner_tail >= 0.0f && inner_tail <= rank) || (inner_head >= 0.0f && inner_head <= rank)) {
                 return -1;
             }
+        }
+        if (vocabulary_span_matches_spelling(bias, term_index, letters)) {
+            return k_vocab_span_spelling;
         }
         return 1;
     }

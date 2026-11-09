@@ -2094,6 +2094,11 @@ transcribe_status rescore_vocabulary(const HostDecoderWeights &    w,
         joint_columns += scorer.joint_columns;
         ++scored;
         const double gain = term_lp + boost - heard_lp;
+        // An exact sounds-like spelling is a declared mishearing, so it
+        // replaces the span even when the term scores worse acoustically:
+        // users add spellings precisely because it does.
+        const bool   replace = c.spelling || gain >= 0.0;
+        const char * verdict = c.spelling ? "replace (sounds like)" : (replace ? "replace" : "keep");
         std::string  span;
         for (const VocabularyWord & word : words) {
             if (word.first >= c.first && word.first < c.end) {
@@ -2103,15 +2108,20 @@ transcribe_status rescore_vocabulary(const HostDecoderWeights &    w,
         log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
                 "parakeet vocabulary: \"%s\" for \"%s\" frames %lld-%lld heard %.2f term %.2f boost %.2f -> %s",
                 term.text.c_str(), span.c_str(), static_cast<long long>(s), static_cast<long long>(e), heard_lp,
-                term_lp, boost, gain >= 0.0 ? "replace" : "keep");
-        if (gain >= 0.0) {
+                term_lp, boost, verdict);
+        if (replace) {
             accepted.push_back({ c, gain });
         }
     }
 
-    // Best gain first; overlapping spans give way.
-    std::stable_sort(accepted.begin(), accepted.end(),
-                     [](const ScoredCandidate & a, const ScoredCandidate & b) { return a.gain > b.gain; });
+    // Best gain first, with forced spelling matches ahead of every ordinary
+    // gain; overlapping spans give way.
+    std::stable_sort(accepted.begin(), accepted.end(), [](const ScoredCandidate & a, const ScoredCandidate & b) {
+        if (a.c.spelling != b.c.spelling) {
+            return a.c.spelling;
+        }
+        return a.gain > b.gain;
+    });
     std::vector<ScoredCandidate> chosen;
     for (const ScoredCandidate & a : accepted) {
         bool overlaps = false;
@@ -3085,8 +3095,9 @@ transcribe_status decode_rnnt_tree(const HostDecoderWeights &    w,
         }
 
         // 3. Synchronize completed term shadows with greedy backbone G.
-        int    best_idx = -1;
-        double best_eff = G.score;
+        int    best_idx    = -1;
+        bool   best_forced = false;
+        double best_eff    = G.score;
         for (size_t i = 0; i < shadows.size(); ++i) {
             const TreeShadow & s = shadows[i];
             if (s.completed_term < 0) {
@@ -3162,7 +3173,15 @@ transcribe_status decode_rnnt_tree(const HostDecoderWeights &    w,
             const double per_pc = (cls > 0) ? skel_boost : tree_boost;
             const double base   = cls == 0 ? s.vit_score : s.raw_score;
             const double eff    = base + static_cast<double>(s.completed_pieces) * per_pc;
-            if (eff > best_eff) {
+            if (cls == k_vocab_span_spelling) {
+                // A declared mishearing replaces the greedy words without
+                // the acoustic comparison that an ordinary term must win.
+                if (!best_forced || eff > best_eff) {
+                    best_eff    = eff;
+                    best_idx    = static_cast<int>(i);
+                    best_forced = true;
+                }
+            } else if (!best_forced && eff > best_eff) {
                 best_eff = eff;
                 best_idx = static_cast<int>(i);
             }

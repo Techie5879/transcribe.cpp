@@ -21,12 +21,16 @@
 //      transducer's own forward algorithm over the same encoder frames, from
 //      the same predictor state;
 //   3. the term replaces the span when its log-probability plus `boost`
-//      per term piece is at least the span's.
+//      per term piece is at least the span's, or when the span's letters
+//      exactly equal one of the term's sounds-like spellings of at least
+//      two letters. A spelling is a declared mishearing, so it is replaced
+//      without the acoustic comparison the term loses whenever the model
+//      scores the term's own spelling poorly.
 //
-// The audio decides; the boost only says how much worse than the heard
-// words a term may score and still win. It is per piece because the
-// predictor's own language model charges a rare word for every piece it
-// spells ("▁A b att oir" against "▁avatar"). Bounded: at most k_vocab_max_terms
+// The audio decides the fuzzy matches; the boost only says how much worse
+// than the heard words a term may score and still win. It is per piece
+// because the predictor's own language model charges a rare word for every
+// piece it spells ("▁A b att oir" against "▁avatar"). Bounded: at most k_vocab_max_terms
 // terms of at most k_vocab_max_term_tokens pieces, k_vocab_max_candidates
 // spans per decode, and windows of at most k_vocab_max_window_frames.
 
@@ -120,22 +124,34 @@ struct VocabularyWord {
 std::vector<VocabularyWord> vocabulary_words(const Tokenizer & tok, const std::vector<TdtToken> & tokens);
 
 struct VocabularyCandidate {
-    int   first = 0;  // raw token index of the span's first token
-    int   end   = 0;  // one past the span's last core token
-    int   term  = 0;
-    float rank  = 0;  // lower is closer; 0 for a sounds-like spelling
+    int   first    = 0;      // raw token index of the span's first token
+    int   end      = 0;      // one past the span's last core token
+    int   term     = 0;
+    float rank     = 0;      // lower is closer; 0 for a sounds-like spelling
+    bool  spelling = false;  // letters equal one of the term's spellings
 };
+
+// Whether `letters` equals one of `term_index`'s sounds-like spellings.
+// Spellings shorter than two letters never match: one letter is too little
+// to tell a declared mishearing from an ordinary word.
+bool vocabulary_span_matches_spelling(const VocabularyBias & bias, int term_index, const std::string & letters);
 
 // Spans of `words` worth rescoring, closest first, at most
 // k_vocab_max_candidates. Pure (no model access).
 std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<VocabularyWord> & words,
                                                             const VocabularyBias &              bias);
 
+// classify_vocabulary_span result for an exact sounds-like spelling match:
+// the span is a declared mishearing and is replaced without the acoustic
+// comparison.
+constexpr int k_vocab_span_spelling = 2;
+
 // Classify a greedy word span covered by a decode-time vocabulary hypothesis:
 //  -1: keep greedy (already written, case-only, inflection, address/path, or
 //      swallows a neighbouring word around a closer inner span)
 //   0: non-skeleton match (dropped word or short near-miss; use tree boost)
-//   1: phonetic/skeleton or sounds-like match (use full vocabulary boost)
+//   1: phonetic/skeleton match (use full vocabulary boost)
+//   2: exact sounds-like spelling match (replace unconditionally)
 int classify_vocabulary_span(const std::vector<VocabularyWord> & span_words,
                              const VocabularyBias &              bias,
                              int                                 term_index);
