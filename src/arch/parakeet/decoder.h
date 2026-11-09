@@ -340,10 +340,12 @@ transcribe_status decode_rnnt_tree(const HostDecoderWeights &    w,
                                    DecodeCapture *               capture = nullptr);
 
 // Vocabulary rescoring (vocabulary.h) of the tokens a decoder emitted
-// into `capture`. Spans whose window falls outside the captured frames, or
-// before its first checkpoint, are left alone. Rewrites `tokens` in place:
-// each accepted span's tokens become the term's pieces, spread over the
-// span's frames. No-op for CTC heads or an inactive bias.
+// into `capture`. Ordinary spans whose window falls outside the captured
+// frames, or before its first checkpoint, are left alone; exact sounds-like
+// spelling spans are replaced without scoring even when no window is
+// available. Rewrites `tokens` in place: each accepted span's tokens become
+// the term's pieces, spread over the span's frames. No-op for CTC heads or
+// an inactive bias.
 transcribe_status rescore_vocabulary(const HostDecoderWeights &    w,
                                      const transcribe::Tokenizer & tok,
                                      const VocabularyBias &        bias,

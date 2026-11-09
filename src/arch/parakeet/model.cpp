@@ -437,9 +437,12 @@ static DecodeCapture * stream_capture_sink(ParakeetSession * pc, const ParakeetM
 // whether the tokens changed.
 static transcribe_status finish_stream_vocabulary(ParakeetSession * pc, const ParakeetModel * pm, bool * changed) {
     *changed = false;
-    if (!pc->stream_vocabulary.active() || pc->stream_capture.enc_proj.empty()) {
+    if (!pc->stream_vocabulary.active()) {
         return TRANSCRIBE_OK;
     }
+    // rescore_vocabulary still applies exact spelling replacements when the
+    // capture is empty (a stream that retained no frames, or a decoded span
+    // before the first checkpoint), so it always runs for an active bias.
     const auto           before = pc->raw_tokens.size();
     std::vector<int32_t> ids_before;
     for (const auto & t : pc->raw_tokens) {
@@ -928,6 +931,11 @@ static transcribe_status decode_and_populate(ParakeetSession *             pc,
                 if (tree_mode) {
                     st = decode_rnnt_tree(pm->host_decoder, pm->tok, enc, T_enc, d_enc, pc->n_threads, tree_options,
                                           vocabulary, pc->raw_tokens);
+                    if (st == TRANSCRIBE_OK) {
+                        // Exact spellings need no acoustic score, so they
+                        // apply even when the tree pruned the term's shadow.
+                        force_vocabulary_spellings(pm->tok, vocabulary, pc->raw_tokens);
+                    }
                 } else {
                     st = decode_rnnt_greedy(pm->host_decoder, enc, T_enc, d_enc, pc->n_threads, pc->raw_tokens,
                                             capture_out);

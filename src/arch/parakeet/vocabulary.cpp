@@ -48,6 +48,30 @@ std::string trim(const std::string & text) {
     return text.substr(a, b - a);
 }
 
+bool spans_overlap(const VocabularyCandidate & a, const VocabularyCandidate & b) {
+    return a.first < b.end && b.first < a.end;
+}
+
+int vocabulary_code_points(const std::string & text) {
+    int count = 0;
+    for (const char ch : text) {
+        if ((static_cast<unsigned char>(ch) & 0xC0) != 0x80) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+std::string vocabulary_span_text(const std::vector<VocabularyWord> & words, const VocabularyCandidate & c) {
+    std::string text;
+    for (const VocabularyWord & word : words) {
+        if (word.first >= c.first && word.first < c.end) {
+            text += text.empty() ? word.text : " " + word.text;
+        }
+    }
+    return text;
+}
+
 bool add_term(const Tokenizer & tok, const std::string & raw, VocabularyBias & out) {
     const std::string text = trim(raw);
     if (text.empty()) {
@@ -359,11 +383,106 @@ std::vector<VocabularyWord> vocabulary_words(const Tokenizer & tok, const std::v
 
 bool vocabulary_span_matches_spelling(const VocabularyBias & bias, int term_index, const std::string & letters) {
     for (const VocabularySpelling & s : bias.spellings) {
-        if (s.term == term_index && s.letters.size() >= 2 && s.letters == letters) {
+        if (s.term == term_index && s.letters == letters && vocabulary_code_points(s.letters) >= 2) {
             return true;
         }
     }
     return false;
+}
+
+std::vector<VocabularyCandidate> resolve_vocabulary_spellings(const std::vector<VocabularyCandidate> & candidates,
+                                                              const std::vector<VocabularyWord> &      words,
+                                                              const VocabularyBias &                   bias) {
+    std::vector<VocabularyCandidate> ordered;
+    for (const VocabularyCandidate & c : candidates) {
+        if (c.spelling) {
+            ordered.push_back(c);
+        }
+    }
+    if (ordered.empty()) {
+        return ordered;
+    }
+    std::stable_sort(ordered.begin(), ordered.end(), [](const VocabularyCandidate & a, const VocabularyCandidate & b) {
+        const int la = a.end - a.first;
+        const int lb = b.end - b.first;
+        if (la != lb) {
+            return la > lb;
+        }
+        return a.first < b.first;
+    });
+    std::vector<VocabularyCandidate> chosen;
+    for (const VocabularyCandidate & c : ordered) {
+        bool overlaps = false;
+        for (const VocabularyCandidate & other : chosen) {
+            overlaps = overlaps || spans_overlap(c, other);
+        }
+        if (!overlaps) {
+            chosen.push_back(c);
+        }
+    }
+    std::sort(chosen.begin(), chosen.end(),
+              [](const VocabularyCandidate & a, const VocabularyCandidate & b) { return a.first < b.first; });
+    for (const VocabularyCandidate & c : chosen) {
+        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG, "parakeet vocabulary: \"%s\" for \"%s\" -> replace (sounds like)",
+                bias.terms[static_cast<size_t>(c.term)].text.c_str(), vocabulary_span_text(words, c).c_str());
+    }
+    return chosen;
+}
+
+void splice_vocabulary_replacements(const std::vector<VocabularyCandidate> & chosen,
+                                    const VocabularyBias &                   bias,
+                                    std::vector<TdtToken> &                  tokens) {
+    if (chosen.empty()) {
+        return;
+    }
+    std::vector<TdtToken> out;
+    out.reserve(tokens.size() + 16);
+    int i = 0;
+    for (const VocabularyCandidate & c : chosen) {
+        for (; i < c.first; ++i) {
+            out.push_back(tokens[static_cast<size_t>(i)]);
+        }
+        const TdtToken & first = tokens[static_cast<size_t>(c.first)];
+        const TdtToken & lastk = tokens[static_cast<size_t>(c.end - 1)];
+        float            p     = 1.0f;
+        for (int k = c.first; k < c.end; ++k) {
+            p = std::min(p, tokens[static_cast<size_t>(k)].p);
+        }
+        const auto & ids  = bias.terms[static_cast<size_t>(c.term)].ids;
+        const int    n    = static_cast<int>(ids.size());
+        const int    span = lastk.step_at_emit - first.step_at_emit;
+        for (int k = 0; k < n; ++k) {
+            TdtToken t;
+            t.id              = ids[static_cast<size_t>(k)];
+            t.p               = p;
+            t.step_at_emit    = first.step_at_emit + (n > 1 ? span * k / (n - 1) : 0);
+            t.duration_frames = (k == n - 1) ? lastk.duration_frames : 1;
+            out.push_back(t);
+        }
+        i = c.end;
+    }
+    for (; i < static_cast<int>(tokens.size()); ++i) {
+        out.push_back(tokens[static_cast<size_t>(i)]);
+    }
+    tokens.swap(out);
+}
+
+void apply_vocabulary_spellings(const std::vector<VocabularyWord> & words,
+                                const VocabularyBias &              bias,
+                                std::vector<TdtToken> &             tokens) {
+    if (!bias.active() || bias.spellings.empty() || tokens.empty()) {
+        return;
+    }
+    const std::vector<VocabularyCandidate> chosen =
+        resolve_vocabulary_spellings(find_vocabulary_candidates(words, bias), words, bias);
+    splice_vocabulary_replacements(chosen, bias, tokens);
+}
+
+void force_vocabulary_spellings(const Tokenizer & tok, const VocabularyBias & bias, std::vector<TdtToken> & tokens) {
+    if (!bias.active() || bias.spellings.empty() || tokens.empty()) {
+        return;
+    }
+    apply_vocabulary_spellings(vocabulary_words(tok, tokens), bias, tokens);
 }
 
 std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<VocabularyWord> & words,
@@ -554,9 +673,6 @@ int classify_vocabulary_span(const std::vector<VocabularyWord> & span_words,
             if ((inner_tail >= 0.0f && inner_tail <= rank) || (inner_head >= 0.0f && inner_head <= rank)) {
                 return -1;
             }
-        }
-        if (vocabulary_span_matches_spelling(bias, term_index, letters)) {
-            return k_vocab_span_spelling;
         }
         return 1;
     }

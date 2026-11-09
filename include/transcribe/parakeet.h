@@ -117,27 +117,32 @@ TRANSCRIBE_API void transcribe_parakeet_buffered_stream_ext_init(struct transcri
  * VOCABULARY). An offline RNN-T run follows its greedy decode and, where
  * the audio could also spell a term, decodes the term alongside it; the
  * term replaces the greedy words when it outscores them with `boost` per
- * piece (0.6 x `boost` when the words do not sound like it), or when the
- * greedy words exactly match one of the term's sounds_like spellings. TDT
- * heads and streams rescore after the greedy decode: a word span that
- * sounds like a term is rescored against the term over the same encoder
- * frames, and the term replaces it when its alignment log-probability plus
- * `boost` for each of its pieces is at least the span's. A span that
- * exactly matches one of the term's sounds_like spellings replaces it
- * regardless of that comparison, because a spelling is a declared
- * mishearing and the term's own spelling is exactly what scores poorly.
- * Without this extension the family default boost applies.
+ * piece (0.6 x `boost` when the words do not sound like it). TDT heads and
+ * streams rescore after the greedy decode: a word span that sounds like a
+ * term is rescored against the term over the same encoder frames, and the
+ * term replaces it when its alignment log-probability plus `boost` for
+ * each of its pieces is at least the span's. Without this extension the
+ * family default boost applies.
+ *
+ * An exact sounds_like spelling is a declared mishearing, so it needs no
+ * acoustic comparison. A word span that exactly matches one of a term's
+ * sounds_like spellings is replaced by that term without scoring, after
+ * the RNN-T tree decode and alongside TDT/stream rescoring. This also
+ * applies when the term's own spelling scores too poorly for the acoustic
+ * paths to choose it. Spellings never enter the comparisons above. The
+ * usual span rules still apply: already-written terms, case-only
+ * differences, inflections, and address/path text are left alone.
  *
  *   boost        Nats added to a term's score per SentencePiece piece of
  *                the term. < 0 selects the family default; 0 turns
  *                biasing off.
  *   sounds_like  Optional spellings a transcript may show instead of a
  *                term; sounds_like_term[i] is the index of the
- *                vocabulary entry that sounds_like[i] belongs to. An
- *                exact spelling match (at least two letters) always
- *                replaces the misheard text. Shorter spellings are
- *                ignored: one letter is too little to tell a mishearing
- *                from an ordinary word.
+ *                vocabulary entry that sounds_like[i] belongs to. A
+ *                spelling must be at least two Unicode code points;
+ *                shorter spellings are ignored, since one letter is too
+ *                little to tell a declared mishearing from an ordinary
+ *                word.
  */
 struct transcribe_parakeet_vocabulary_ext {
     struct transcribe_ext ext;

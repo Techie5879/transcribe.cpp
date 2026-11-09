@@ -1977,151 +1977,165 @@ transcribe_status rescore_vocabulary(const HostDecoderWeights &    w,
                                      std::vector<TdtToken> &       tokens) {
     const int64_t joint_h  = w.joint.joint_h;
     const int     n_frames = joint_h > 0 ? static_cast<int>(capture.enc_proj.size() / static_cast<size_t>(joint_h)) : 0;
-    if (!bias.active() || tokens.empty() || n_frames <= 0 || capture.checkpoints.empty() ||
-        w.head_kind == HostHeadKind::CTC) {
+    if (!bias.active() || tokens.empty() || w.head_kind == HostHeadKind::CTC) {
         return TRANSCRIBE_OK;
     }
-    const float *                          enc_proj             = capture.enc_proj.data();
-    const int64_t                          enc_proj_first_frame = capture.enc_proj_first_frame;
-    const int64_t                          t_start              = ggml_time_us();
-    const std::vector<VocabularyWord>      words                = vocabulary_words(tok, tokens);
-    const std::vector<VocabularyCandidate> candidates           = find_vocabulary_candidates(words, bias);
+    const int64_t                          t_start    = ggml_time_us();
+    const std::vector<VocabularyWord>      words      = vocabulary_words(tok, tokens);
+    const std::vector<VocabularyCandidate> candidates = find_vocabulary_candidates(words, bias);
     if (candidates.empty()) {
         return TRANSCRIBE_OK;
     }
 
-    PredGraph pg;
-    build_pred_graph(pg, w.predictor, resolve_decode_threads(n_threads));
-    if (!pg.ready) {
-        return TRANSCRIBE_ERR_BACKEND;
-    }
-
-    // Predictor state before each candidate's first token: the decoder's
-    // nearest checkpoint at or before it, stepped through the tokens in
-    // between (the same lazy state machine as the decoders). A candidate
-    // before the first retained checkpoint is not rescored.
-    std::vector<int> needed;
+    // Exact spellings need no scores and never enter the acoustic
+    // comparison. Resolve them first so they win any overlap with an
+    // ordinary candidate, then score only the candidates that remain.
+    const std::vector<VocabularyCandidate> spellings = resolve_vocabulary_spellings(candidates, words, bias);
+    std::vector<VocabularyCandidate>       scored_candidates;
     for (const VocabularyCandidate & c : candidates) {
-        if (c.first >= capture.checkpoints.front().token) {
-            needed.push_back(c.first);
+        if (c.spelling) {
+            continue;
         }
-    }
-    std::sort(needed.begin(), needed.end());
-    needed.erase(std::unique(needed.begin(), needed.end()), needed.end());
-    std::vector<PredictorSnapshot> snapshots(needed.size());
-    {
-        const int          n_layers = static_cast<int>(w.predictor.lstm.size());
-        const int          H        = w.predictor.pred_hidden;
-        LstmState          next_state;
-        std::vector<float> scratch_x;
-        next_state.reset(n_layers, H);
-        for (size_t k = 0; k < needed.size(); ++k) {
-            const auto cp    = std::upper_bound(capture.checkpoints.begin(), capture.checkpoints.end(), needed[k],
-                                                [](int t, const PredictorCheckpoint & c) { return t < c.token; }) -
-                               1;
-            LstmState  state = cp->state;
-            int        last  = cp->last_token;
-            for (int i = cp->token; i < needed[k]; ++i) {
-                if (predictor_step_ggml(w.predictor, pg, last, state, next_state, scratch_x) == nullptr) {
-                    return TRANSCRIBE_ERR_BACKEND;
-                }
-                std::swap(state, next_state);
-                last = tokens[static_cast<size_t>(i)].id;
-            }
-            snapshots[k].state      = std::move(state);
-            snapshots[k].last_token = last;
+        bool overlaps_spelling = false;
+        for (const VocabularyCandidate & s : spellings) {
+            overlaps_spelling = overlaps_spelling || (c.first < s.end && s.first < c.end);
+        }
+        if (!overlaps_spelling) {
+            scored_candidates.push_back(c);
         }
     }
 
-    const int64_t                t_replayed = ggml_time_us();
-    const int64_t                last_frame = enc_proj_first_frame + n_frames - 1;
     std::vector<ScoredCandidate> accepted;
     int64_t                      joint_columns = 0;
     int                          scored        = 0;
-    for (const VocabularyCandidate & c : candidates) {
-        const TdtToken & first = tokens[static_cast<size_t>(c.first)];
-        const TdtToken & lastk = tokens[static_cast<size_t>(c.end - 1)];
-        // Window: a few frames either side of the span, clipped to the
-        // neighbouring tokens' frames. When the next token falls inside the
-        // tail, both paths must end by emitting it there; otherwise by a
-        // blank at the window's last frame.
-        int64_t          s     = std::max<int64_t>(first.step_at_emit - k_vocab_window_lead, 0);
-        if (c.first > 0) {
-            s = std::max<int64_t>(s, tokens[static_cast<size_t>(c.first - 1)].step_at_emit);
-        }
-        int     next_id = -1;
-        int64_t e       = lastk.step_at_emit + std::max(lastk.duration_frames, 1) + k_vocab_window_tail;
-        if (c.end < static_cast<int>(tokens.size())) {
-            const TdtToken & nx = tokens[static_cast<size_t>(c.end)];
-            if (nx.step_at_emit <= e) {
-                e       = nx.step_at_emit;
-                next_id = nx.id;
+    int64_t                      t_replayed    = t_start;
+    if (!scored_candidates.empty() && n_frames > 0 && !capture.checkpoints.empty()) {
+        const float * enc_proj             = capture.enc_proj.data();
+        const int64_t enc_proj_first_frame = capture.enc_proj_first_frame;
+
+        // Predictor state before each candidate's first token: the decoder's
+        // nearest checkpoint at or before it, stepped through the tokens in
+        // between (the same lazy state machine as the decoders). A candidate
+        // before the first retained checkpoint is not rescored.
+        std::vector<int> needed;
+        for (const VocabularyCandidate & c : scored_candidates) {
+            if (c.first >= capture.checkpoints.front().token) {
+                needed.push_back(c.first);
             }
         }
-        e = std::min(e, last_frame);
-        if (s < enc_proj_first_frame || e < s || e - s + 1 > k_vocab_max_window_frames) {
-            continue;
-        }
-        const int W = static_cast<int>(e - s + 1);
-
-        WindowJoint joint;
-        if (!build_window_joint(joint, w.joint, pg.backend, W)) {
-            return TRANSCRIBE_ERR_BACKEND;
-        }
-        ggml_backend_tensor_set(
-            joint.enc_in,
-            enc_proj + static_cast<size_t>(s - enc_proj_first_frame) * static_cast<size_t>(w.joint.joint_h), 0,
-            static_cast<size_t>(W) * static_cast<size_t>(w.joint.joint_h) * sizeof(float));
-
-        const auto snap_at = std::lower_bound(needed.begin(), needed.end(), c.first);
-        if (snap_at == needed.end() || *snap_at != c.first) {
-            continue;
-        }
-        const size_t         snap = static_cast<size_t>(snap_at - needed.begin());
-        std::vector<int32_t> heard;
-        for (int i = c.first; i < c.end; ++i) {
-            heard.push_back(tokens[static_cast<size_t>(i)].id);
-        }
-        WindowScorer scorer{ w, pg, joint, {}, {}, 0 };
-        double       heard_lp = 0.0;
-        double       term_lp  = 0.0;
-        const auto & term     = bias.terms[static_cast<size_t>(c.term)];
-        const double boost    = static_cast<double>(bias.boost) * static_cast<double>(term.ids.size());
-        if (!scorer.score(snapshots[snap], heard, next_id, k_neg_inf, heard_lp) ||
-            !scorer.score(snapshots[snap], term.ids, next_id, heard_lp - boost, term_lp)) {
-            return TRANSCRIBE_ERR_BACKEND;
-        }
-        joint_columns += scorer.joint_columns;
-        ++scored;
-        const double gain = term_lp + boost - heard_lp;
-        // An exact sounds-like spelling is a declared mishearing, so it
-        // replaces the span even when the term scores worse acoustically:
-        // users add spellings precisely because it does.
-        const bool   replace = c.spelling || gain >= 0.0;
-        const char * verdict = c.spelling ? "replace (sounds like)" : (replace ? "replace" : "keep");
-        std::string  span;
-        for (const VocabularyWord & word : words) {
-            if (word.first >= c.first && word.first < c.end) {
-                span += span.empty() ? word.text : " " + word.text;
+        std::sort(needed.begin(), needed.end());
+        needed.erase(std::unique(needed.begin(), needed.end()), needed.end());
+        if (!needed.empty()) {
+            PredGraph pg;
+            build_pred_graph(pg, w.predictor, resolve_decode_threads(n_threads));
+            if (!pg.ready) {
+                return TRANSCRIBE_ERR_BACKEND;
             }
-        }
-        log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
-                "parakeet vocabulary: \"%s\" for \"%s\" frames %lld-%lld heard %.2f term %.2f boost %.2f -> %s",
-                term.text.c_str(), span.c_str(), static_cast<long long>(s), static_cast<long long>(e), heard_lp,
-                term_lp, boost, verdict);
-        if (replace) {
-            accepted.push_back({ c, gain });
+
+            std::vector<PredictorSnapshot> snapshots(needed.size());
+            {
+                const int          n_layers = static_cast<int>(w.predictor.lstm.size());
+                const int          H        = w.predictor.pred_hidden;
+                LstmState          next_state;
+                std::vector<float> scratch_x;
+                next_state.reset(n_layers, H);
+                for (size_t k = 0; k < needed.size(); ++k) {
+                    const auto cp    = std::upper_bound(capture.checkpoints.begin(), capture.checkpoints.end(),
+                                                        needed[k],
+                                                        [](int t, const PredictorCheckpoint & c) { return t < c.token; }) -
+                                   1;
+                    LstmState  state = cp->state;
+                    int        last  = cp->last_token;
+                    for (int i = cp->token; i < needed[k]; ++i) {
+                        if (predictor_step_ggml(w.predictor, pg, last, state, next_state, scratch_x) == nullptr) {
+                            return TRANSCRIBE_ERR_BACKEND;
+                        }
+                        std::swap(state, next_state);
+                        last = tokens[static_cast<size_t>(i)].id;
+                    }
+                    snapshots[k].state      = std::move(state);
+                    snapshots[k].last_token = last;
+                }
+            }
+            t_replayed = ggml_time_us();
+
+            const int64_t last_frame = enc_proj_first_frame + n_frames - 1;
+            for (const VocabularyCandidate & c : scored_candidates) {
+                const TdtToken & first = tokens[static_cast<size_t>(c.first)];
+                const TdtToken & lastk = tokens[static_cast<size_t>(c.end - 1)];
+                // Window: a few frames either side of the span, clipped to the
+                // neighbouring tokens' frames. When the next token falls inside the
+                // tail, both paths must end by emitting it there; otherwise by a
+                // blank at the window's last frame.
+                int64_t s = std::max<int64_t>(first.step_at_emit - k_vocab_window_lead, 0);
+                if (c.first > 0) {
+                    s = std::max<int64_t>(s, tokens[static_cast<size_t>(c.first - 1)].step_at_emit);
+                }
+                int     next_id = -1;
+                int64_t e       = lastk.step_at_emit + std::max(lastk.duration_frames, 1) + k_vocab_window_tail;
+                if (c.end < static_cast<int>(tokens.size())) {
+                    const TdtToken & nx = tokens[static_cast<size_t>(c.end)];
+                    if (nx.step_at_emit <= e) {
+                        e       = nx.step_at_emit;
+                        next_id = nx.id;
+                    }
+                }
+                e = std::min(e, last_frame);
+                if (s < enc_proj_first_frame || e < s || e - s + 1 > k_vocab_max_window_frames) {
+                    continue;
+                }
+                const int W = static_cast<int>(e - s + 1);
+
+                WindowJoint joint;
+                if (!build_window_joint(joint, w.joint, pg.backend, W)) {
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
+                ggml_backend_tensor_set(
+                    joint.enc_in,
+                    enc_proj + static_cast<size_t>(s - enc_proj_first_frame) * static_cast<size_t>(w.joint.joint_h),
+                    0, static_cast<size_t>(W) * static_cast<size_t>(w.joint.joint_h) * sizeof(float));
+
+                const auto snap_at = std::lower_bound(needed.begin(), needed.end(), c.first);
+                if (snap_at == needed.end() || *snap_at != c.first) {
+                    continue;
+                }
+                const size_t         snap = static_cast<size_t>(snap_at - needed.begin());
+                std::vector<int32_t> heard;
+                for (int i = c.first; i < c.end; ++i) {
+                    heard.push_back(tokens[static_cast<size_t>(i)].id);
+                }
+                WindowScorer scorer{ w, pg, joint, {}, {}, 0 };
+                double       heard_lp = 0.0;
+                double       term_lp  = 0.0;
+                const auto & term     = bias.terms[static_cast<size_t>(c.term)];
+                const double boost    = static_cast<double>(bias.boost) * static_cast<double>(term.ids.size());
+                if (!scorer.score(snapshots[snap], heard, next_id, k_neg_inf, heard_lp) ||
+                    !scorer.score(snapshots[snap], term.ids, next_id, heard_lp - boost, term_lp)) {
+                    return TRANSCRIBE_ERR_BACKEND;
+                }
+                joint_columns += scorer.joint_columns;
+                ++scored;
+                const double gain = term_lp + boost - heard_lp;
+                std::string  span;
+                for (const VocabularyWord & word : words) {
+                    if (word.first >= c.first && word.first < c.end) {
+                        span += span.empty() ? word.text : " " + word.text;
+                    }
+                }
+                log_msg(TRANSCRIBE_LOG_LEVEL_DEBUG,
+                        "parakeet vocabulary: \"%s\" for \"%s\" frames %lld-%lld heard %.2f term %.2f boost %.2f -> %s",
+                        term.text.c_str(), span.c_str(), static_cast<long long>(s), static_cast<long long>(e), heard_lp,
+                        term_lp, boost, gain >= 0.0 ? "replace" : "keep");
+                if (gain >= 0.0) {
+                    accepted.push_back({ c, gain });
+                }
+            }
         }
     }
 
-    // Best gain first, with forced spelling matches ahead of every ordinary
-    // gain; overlapping spans give way.
-    std::stable_sort(accepted.begin(), accepted.end(), [](const ScoredCandidate & a, const ScoredCandidate & b) {
-        if (a.c.spelling != b.c.spelling) {
-            return a.c.spelling;
-        }
-        return a.gain > b.gain;
-    });
+    // Best gain first; overlapping spans give way.
+    std::stable_sort(accepted.begin(), accepted.end(),
+                     [](const ScoredCandidate & a, const ScoredCandidate & b) { return a.gain > b.gain; });
     std::vector<ScoredCandidate> chosen;
     for (const ScoredCandidate & a : accepted) {
         bool overlaps = false;
@@ -2132,45 +2146,18 @@ transcribe_status rescore_vocabulary(const HostDecoderWeights &    w,
             chosen.push_back(a);
         }
     }
-    std::sort(chosen.begin(), chosen.end(),
-              [](const ScoredCandidate & a, const ScoredCandidate & b) { return a.c.first < b.c.first; });
 
-    if (!chosen.empty()) {
-        std::vector<TdtToken> out;
-        out.reserve(tokens.size() + 16);
-        int i = 0;
-        for (const ScoredCandidate & ch : chosen) {
-            for (; i < ch.c.first; ++i) {
-                out.push_back(tokens[static_cast<size_t>(i)]);
-            }
-            const TdtToken & first = tokens[static_cast<size_t>(ch.c.first)];
-            const TdtToken & lastk = tokens[static_cast<size_t>(ch.c.end - 1)];
-            float            p     = 1.0f;
-            for (int k = ch.c.first; k < ch.c.end; ++k) {
-                p = std::min(p, tokens[static_cast<size_t>(k)].p);
-            }
-            const auto & ids  = bias.terms[static_cast<size_t>(ch.c.term)].ids;
-            const int    n    = static_cast<int>(ids.size());
-            const int    span = lastk.step_at_emit - first.step_at_emit;
-            for (int k = 0; k < n; ++k) {
-                TdtToken t;
-                t.id              = ids[static_cast<size_t>(k)];
-                t.p               = p;
-                t.step_at_emit    = first.step_at_emit + (n > 1 ? span * k / (n - 1) : 0);
-                t.duration_frames = (k == n - 1) ? lastk.duration_frames : 1;
-                out.push_back(t);
-            }
-            i = ch.c.end;
-        }
-        for (; i < static_cast<int>(tokens.size()); ++i) {
-            out.push_back(tokens[static_cast<size_t>(i)]);
-        }
-        tokens.swap(out);
+    std::vector<VocabularyCandidate> replacements = spellings;
+    for (const ScoredCandidate & ch : chosen) {
+        replacements.push_back(ch.c);
     }
+    std::sort(replacements.begin(), replacements.end(),
+              [](const VocabularyCandidate & a, const VocabularyCandidate & b) { return a.first < b.first; });
+    splice_vocabulary_replacements(replacements, bias, tokens);
 
     log_msg(TRANSCRIBE_LOG_LEVEL_INFO,
             "parakeet vocabulary: %d candidates, %d scored, %d replaced, %lld joint columns, %.1f ms (replay %.1f ms)",
-            static_cast<int>(candidates.size()), scored, static_cast<int>(chosen.size()),
+            static_cast<int>(candidates.size()), scored, static_cast<int>(replacements.size()),
             static_cast<long long>(joint_columns), (ggml_time_us() - t_start) / 1000.0,
             (t_replayed - t_start) / 1000.0);
     return TRANSCRIBE_OK;
@@ -3095,9 +3082,8 @@ transcribe_status decode_rnnt_tree(const HostDecoderWeights &    w,
         }
 
         // 3. Synchronize completed term shadows with greedy backbone G.
-        int    best_idx    = -1;
-        bool   best_forced = false;
-        double best_eff    = G.score;
+        int    best_idx = -1;
+        double best_eff = G.score;
         for (size_t i = 0; i < shadows.size(); ++i) {
             const TreeShadow & s = shadows[i];
             if (s.completed_term < 0) {
@@ -3173,15 +3159,7 @@ transcribe_status decode_rnnt_tree(const HostDecoderWeights &    w,
             const double per_pc = (cls > 0) ? skel_boost : tree_boost;
             const double base   = cls == 0 ? s.vit_score : s.raw_score;
             const double eff    = base + static_cast<double>(s.completed_pieces) * per_pc;
-            if (cls == k_vocab_span_spelling) {
-                // A declared mishearing replaces the greedy words without
-                // the acoustic comparison that an ordinary term must win.
-                if (!best_forced || eff > best_eff) {
-                    best_eff    = eff;
-                    best_idx    = static_cast<int>(i);
-                    best_forced = true;
-                }
-            } else if (!best_forced && eff > best_eff) {
+            if (eff > best_eff) {
                 best_eff = eff;
                 best_idx = static_cast<int>(i);
             }

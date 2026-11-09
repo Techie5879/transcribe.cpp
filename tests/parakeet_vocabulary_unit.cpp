@@ -35,6 +35,28 @@ std::vector<pv::VocabularyWord> words(const std::vector<std::string> & texts) {
     return out;
 }
 
+// One token per word, with explicit confidences and 10-frame spacing.
+std::vector<pv::TdtToken> tokens(const std::vector<int> & ids, const std::vector<float> & ps = {}) {
+    std::vector<pv::TdtToken> out;
+    for (size_t i = 0; i < ids.size(); ++i) {
+        pv::TdtToken t;
+        t.id              = ids[i];
+        t.p               = ps.empty() ? 0.9f : ps[i];
+        t.step_at_emit    = static_cast<int>(i) * 10;
+        t.duration_frames = 2;
+        out.push_back(t);
+    }
+    return out;
+}
+
+std::vector<int> ids_of(const std::vector<pv::TdtToken> & toks) {
+    std::vector<int> out;
+    for (const auto & t : toks) {
+        out.push_back(t.id);
+    }
+    return out;
+}
+
 pv::VocabularyBias bias(const std::vector<std::string> & terms) {
     pv::VocabularyBias b;
     b.boost = 4.0f;
@@ -113,6 +135,91 @@ int main() {
         check(!forced, "a one-letter spelling is never forced");
     }
     {
+        // The pure spelling pass needs no acoustic scores: an exact spelling
+        // is spliced into the term's ids with rescoring's token construction.
+        auto b         = bias({ "Wazuh" });
+        b.terms[0].ids = { 20, 21 };
+        b.spellings.push_back({ "waso", 0 });
+        auto toks = tokens({ 10, 11, 12 }, { 0.9f, 0.2f, 0.8f });
+        pv::apply_vocabulary_spellings(words({ "the", "waso", "log" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 10, 20, 21, 12 }, "an exact spelling is spliced without scores");
+        check(toks[1].p == 0.2f && toks[2].p == 0.2f, "spliced pieces keep the span's minimum confidence");
+        check(toks[1].step_at_emit == 10 && toks[2].step_at_emit == 10, "spliced pieces keep the span's frame");
+        check(toks[1].duration_frames == 1 && toks[2].duration_frames == 2,
+              "spliced pieces keep the last token's duration");
+    }
+    {
+        // A multi-token spelling interpolates emit frames across its span.
+        auto b         = bias({ "Wazuh" });
+        b.terms[0].ids = { 20, 21, 22 };
+        b.spellings.push_back({ "wasolog", 0 });
+        auto toks = tokens({ 10, 11, 12, 13 }, { 0.9f, 0.2f, 0.8f, 0.7f });
+        pv::apply_vocabulary_spellings(words({ "the", "waso", "log", "today" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 10, 20, 21, 22, 13 }, "a multi-word spelling is spliced");
+        check(toks[1].step_at_emit == 10 && toks[2].step_at_emit == 15 && toks[3].step_at_emit == 20,
+              "spliced emit frames are interpolated");
+        check(toks[1].p == 0.2f && toks[2].p == 0.2f && toks[3].p == 0.2f,
+              "multi-token splice keeps the minimum confidence");
+        check(toks[1].duration_frames == 1 && toks[2].duration_frames == 1 && toks[3].duration_frames == 2,
+              "multi-token splice keeps the last duration");
+    }
+    {
+        // A fuzzy match is not a spelling and is left for acoustic rescoring.
+        auto b         = bias({ "Wazuh" });
+        b.terms[0].ids = { 20, 21 };
+        b.spellings.push_back({ "waso", 0 });
+        auto toks = tokens({ 10, 11, 12 });
+        pv::apply_vocabulary_spellings(words({ "the", "wasu", "log" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 10, 11, 12 }, "a fuzzy match is untouched");
+    }
+    {
+        // Overlapping spellings resolve longest span first, then earliest.
+        auto b         = bias({ "Wazuh", "Waso" });
+        b.terms[0].ids = { 20 };
+        b.terms[1].ids = { 30 };
+        b.spellings.push_back({ "wasolog", 0 });
+        b.spellings.push_back({ "waso", 1 });
+        auto toks = tokens({ 10, 11 });
+        pv::apply_vocabulary_spellings(words({ "waso", "log" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 20 }, "the longer spelling span wins");
+    }
+    {
+        auto b         = bias({ "Ab", "Bc" });
+        b.terms[0].ids = { 20 };
+        b.terms[1].ids = { 30 };
+        b.spellings.push_back({ "ab", 0 });
+        b.spellings.push_back({ "bc", 1 });
+        auto toks = tokens({ 10, 11, 12 });
+        pv::apply_vocabulary_spellings(words({ "a", "b", "c" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 20, 12 }, "the earlier spelling span wins a tie");
+    }
+    {
+        // A single non-ASCII character is one code point, not two bytes.
+        auto b         = bias({ "Wazuh" });
+        b.terms[0].ids = { 20, 21 };
+        b.spellings.push_back({ "\xC3\xA9", 0 });
+        check(!pv::vocabulary_span_matches_spelling(b, 0, "\xC3\xA9"), "one code point does not match");
+        auto toks = tokens({ 10, 11, 12 });
+        pv::apply_vocabulary_spellings(words({ "the", "\xC3\xA9", "log" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 10, 11, 12 }, "a one-character spelling is not forced");
+    }
+    {
+        // Case-only and address spans keep the existing span rules.
+        auto b         = bias({ "Wazuh" });
+        b.terms[0].ids = { 20 };
+        b.spellings.push_back({ "wazuh", 0 });
+        check(pv::vocabulary_span_matches_spelling(b, 0, "wazuh"), "the spelling itself matches");
+        auto toks = tokens({ 10, 11, 12 });
+        pv::apply_vocabulary_spellings(words({ "the", "wazuh", "log" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 10, 11, 12 }, "a case-only span is untouched");
+
+        b.spellings.clear();
+        b.spellings.push_back({ "wasoai", 0 });
+        auto addr = tokens({ 10 });
+        pv::apply_vocabulary_spellings(words({ "waso.ai" }), b, addr);
+        check(ids_of(addr) == std::vector<int>{ 10 }, "an address span is untouched");
+    }
+    {
         // Case alone is not rescored; a split is.
         const auto b = bias({ "OpenCode", "Effect" });
         check(pv::find_vocabulary_candidates(words({ "an", "effect", "here" }), b).empty(), "case-only difference");
@@ -179,15 +286,12 @@ int main() {
         check(pv::classify_vocabulary_span(words({ "the", "avatar" }), b, 0) == -1, "swallowed article rejected");
     }
     {
-        // Exact spellings are a distinct class so the tree path replaces
-        // them without the acoustic comparison; fuzzy matches are not.
+        // A spelling match classifies like any other sound match; the
+        // separate pure pass does the forcing after the decode.
         auto b = bias({ "Wazuh" });
         b.spellings.push_back({ "waso", 0 });
-        check(pv::classify_vocabulary_span(words({ "waso" }), b, 0) == pv::k_vocab_span_spelling,
-              "spelling match is a forced class");
+        check(pv::classify_vocabulary_span(words({ "waso" }), b, 0) == 1, "spelling match keeps full boost");
         check(pv::classify_vocabulary_span(words({ "wasu" }), b, 0) == 1, "fuzzy match keeps full boost");
-        b.spellings.push_back({ "w", 0 });
-        check(pv::classify_vocabulary_span(words({ "w" }), b, 0) == 0, "one-letter spelling is not forced");
     }
 
     if (g_failures != 0) {

@@ -21,11 +21,13 @@
 //      transducer's own forward algorithm over the same encoder frames, from
 //      the same predictor state;
 //   3. the term replaces the span when its log-probability plus `boost`
-//      per term piece is at least the span's, or when the span's letters
-//      exactly equal one of the term's sounds-like spellings of at least
-//      two letters. A spelling is a declared mishearing, so it is replaced
-//      without the acoustic comparison the term loses whenever the model
-//      scores the term's own spelling poorly.
+//      per term piece is at least the span's.
+//
+// An exact sounds-like spelling is a declared mishearing, so it does not
+// depend on acoustic scores: force_vocabulary_spellings replaces those
+// spans in a pure token pass after decode_rnnt_tree, and rescore_vocabulary
+// includes the same replacements in its final splice. Spellings never
+// enter the acoustic comparison.
 //
 // The audio decides the fuzzy matches; the boost only says how much worse
 // than the heard words a term may score and still win. It is per piece
@@ -132,8 +134,8 @@ struct VocabularyCandidate {
 };
 
 // Whether `letters` equals one of `term_index`'s sounds-like spellings.
-// Spellings shorter than two letters never match: one letter is too little
-// to tell a declared mishearing from an ordinary word.
+// A spelling must be at least two Unicode code points: one letter is too
+// little to tell a declared mishearing from an ordinary word.
 bool vocabulary_span_matches_spelling(const VocabularyBias & bias, int term_index, const std::string & letters);
 
 // Spans of `words` worth rescoring, closest first, at most
@@ -141,17 +143,40 @@ bool vocabulary_span_matches_spelling(const VocabularyBias & bias, int term_inde
 std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<VocabularyWord> & words,
                                                             const VocabularyBias &              bias);
 
-// classify_vocabulary_span result for an exact sounds-like spelling match:
-// the span is a declared mishearing and is replaced without the acoustic
-// comparison.
-constexpr int k_vocab_span_spelling = 2;
+// Exact sounds-like spelling candidates among `candidates`, resolved
+// deterministically: longest span first (token range), then earliest
+// position, with a later span that overlaps an already-chosen one dropped.
+// Logs each chosen replacement at DEBUG and returns them sorted by position.
+// Pure (no model access).
+std::vector<VocabularyCandidate> resolve_vocabulary_spellings(const std::vector<VocabularyCandidate> & candidates,
+                                                              const std::vector<VocabularyWord> &      words,
+                                                              const VocabularyBias &                   bias);
+
+// Splice each selected span into its term's pieces, spread over the span:
+// the minimum token confidence, emit frames interpolated from first to last,
+// and the last token's duration. `chosen` must be sorted by `first` and must
+// not overlap.
+void splice_vocabulary_replacements(const std::vector<VocabularyCandidate> & chosen,
+                                    const VocabularyBias &                   bias,
+                                    std::vector<TdtToken> &                  tokens);
+
+// Replace exact sounds-like spelling spans in `tokens` with their terms.
+// The pure core of force_vocabulary_spellings, taking already-segmented
+// words so it is testable without a tokenizer.
+void apply_vocabulary_spellings(const std::vector<VocabularyWord> & words,
+                                const VocabularyBias &              bias,
+                                std::vector<TdtToken> &             tokens);
+
+// Replace exact sounds-like spelling spans in `tokens` with their terms.
+// Pure token pass: no acoustic scores and no decode capture. Callers run it
+// after every vocabulary-active decode.
+void force_vocabulary_spellings(const Tokenizer & tok, const VocabularyBias & bias, std::vector<TdtToken> & tokens);
 
 // Classify a greedy word span covered by a decode-time vocabulary hypothesis:
 //  -1: keep greedy (already written, case-only, inflection, address/path, or
 //      swallows a neighbouring word around a closer inner span)
 //   0: non-skeleton match (dropped word or short near-miss; use tree boost)
-//   1: phonetic/skeleton match (use full vocabulary boost)
-//   2: exact sounds-like spelling match (replace unconditionally)
+//   1: phonetic/skeleton or sounds-like match (use full vocabulary boost)
 int classify_vocabulary_span(const std::vector<VocabularyWord> & span_words,
                              const VocabularyBias &              bias,
                              int                                 term_index);
