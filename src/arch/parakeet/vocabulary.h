@@ -24,10 +24,12 @@
 //      per term piece is at least the span's.
 //
 // An exact sounds-like spelling is a declared mishearing, so it does not
-// depend on acoustic scores: force_vocabulary_spellings replaces those
-// spans in a pure token pass after decode_rnnt_tree, and rescore_vocabulary
-// includes the same replacements in its final splice. Spellings never
-// enter the acoustic comparison.
+// need acoustic scores: force_vocabulary_spellings replaces those spans in
+// a pure token pass after decode_rnnt_tree, and rescore_vocabulary includes
+// the same replacements in its final splice. A spelling is still a sound
+// match to the tree, though: classify_vocabulary_span gives it the full
+// vocabulary boost, not the 0.6x tree ratio. Only the exact pass is
+// unconditional.
 //
 // The audio decides the fuzzy matches; the boost only says how much worse
 // than the heard words a term may score and still win. It is per piece
@@ -139,7 +141,9 @@ struct VocabularyCandidate {
 bool vocabulary_span_matches_spelling(const VocabularyBias & bias, int term_index, const std::string & letters);
 
 // Spans of `words` worth rescoring, closest first, at most
-// k_vocab_max_candidates. Pure (no model access).
+// k_vocab_max_candidates. Exact spellings are candidates too: they sort
+// first because their rank is 0 and count toward that cap. Pure (no model
+// access).
 std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<VocabularyWord> & words,
                                                             const VocabularyBias &              bias);
 

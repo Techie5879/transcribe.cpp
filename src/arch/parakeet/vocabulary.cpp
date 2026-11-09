@@ -564,14 +564,18 @@ std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<Vo
                         continue;
                     }
                 }
-                const float rank = rank_of(letters, t);
+                const float rank     = rank_of(letters, t);
+                const bool  spelling = vocabulary_span_matches_spelling(bias, t, letters);
                 if (rank < 0.0f) {
                     continue;
                 }
                 // A longer span loses to the shorter one inside it that is at
                 // least as close ("an effect" to "effect", "use open code" to
                 // "open code"), so a term never swallows a neighbouring word.
-                if (n > 1) {
+                // A longer span that is itself a declared spelling is the
+                // exception: the user wrote it deliberately, so an inner
+                // spelling must not split it ("postgres sequel").
+                if (n > 1 && !spelling) {
                     const float inner_tail = rank_of(span_letters(a + 1, n - 1), t);
                     const float inner_head = rank_of(span_letters(a, n - 1), t);
                     if ((inner_tail >= 0.0f && inner_tail <= rank) || (inner_head >= 0.0f && inner_head <= rank)) {
@@ -583,7 +587,7 @@ std::vector<VocabularyCandidate> find_vocabulary_candidates(const std::vector<Vo
                 c.end      = words[static_cast<size_t>(a + n - 1)].core_end;
                 c.term     = t;
                 c.rank     = rank;
-                c.spelling = vocabulary_span_matches_spelling(bias, t, letters);
+                c.spelling = spelling;
                 out.push_back(c);
             }
         }
@@ -665,9 +669,12 @@ int classify_vocabulary_span(const std::vector<VocabularyWord> & span_words,
         }
         return static_cast<float>(d_letters) / static_cast<float>(L) + 0.5f * static_cast<float>(d_skel);
     };
-    const float rank = rank_of(letters);
+    const float rank     = rank_of(letters);
+    const bool  spelling = vocabulary_span_matches_spelling(bias, term_index, letters);
     if (rank >= 0.0f) {
-        if (n > 1) {
+        // A declared spelling of the whole span is not split by a closer
+        // inner span, matching find_vocabulary_candidates.
+        if (n > 1 && !spelling) {
             const float inner_tail = rank_of(span_letters(1, n - 1));
             const float inner_head = rank_of(span_letters(0, n - 1));
             if ((inner_tail >= 0.0f && inner_tail <= rank) || (inner_head >= 0.0f && inner_head <= rank)) {

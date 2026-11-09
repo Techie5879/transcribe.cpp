@@ -129,9 +129,11 @@ TRANSCRIBE_API void transcribe_parakeet_buffered_stream_ext_init(struct transcri
  * sounds_like spellings is replaced by that term without scoring, after
  * the RNN-T tree decode and alongside TDT/stream rescoring. This also
  * applies when the term's own spelling scores too poorly for the acoustic
- * paths to choose it. Spellings never enter the comparisons above. The
- * usual span rules still apply: already-written terms, case-only
- * differences, inflections, and address/path text are left alone.
+ * paths to choose it. A spelling is still a sound match to those paths:
+ * the RNN-T tree gives it the full vocabulary boost rather than the 0.6x
+ * tree ratio, but only the exact replacement is unconditional. The usual
+ * span rules still apply: already-written terms, case-only differences,
+ * inflections, and address/path text are left alone.
  *
  *   boost        Nats added to a term's score per SentencePiece piece of
  *                the term. < 0 selects the family default; 0 turns

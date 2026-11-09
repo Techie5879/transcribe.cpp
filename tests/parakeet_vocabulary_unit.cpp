@@ -194,6 +194,39 @@ int main() {
         check(ids_of(toks) == std::vector<int>{ 20, 12 }, "the earlier spelling span wins a tie");
     }
     {
+        // A longer exact spelling is not split by its shorter exact head.
+        auto b         = bias({ "PostgreSQL" });
+        b.terms[0].ids = { 20, 21 };
+        b.spellings.push_back({ "waso", 0 });
+        b.spellings.push_back({ "wasolog", 0 });
+        auto toks = tokens({ 10, 11 });
+        pv::apply_vocabulary_spellings(words({ "waso", "log" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 20, 21 }, "an outer spelling beats its inner head");
+    }
+    {
+        // The same for a longer exact spelling split from its tail.
+        auto b         = bias({ "PostgreSQL" });
+        b.terms[0].ids = { 20 };
+        b.spellings.push_back({ "log", 0 });
+        b.spellings.push_back({ "wasolog", 0 });
+        auto toks = tokens({ 10, 11 });
+        pv::apply_vocabulary_spellings(words({ "waso", "log" }), b, toks);
+        check(ids_of(toks) == std::vector<int>{ 20 }, "an outer spelling beats its inner tail");
+    }
+    {
+        // A non-spelling outer span still loses to the closer inner spelling.
+        auto b = bias({ "OpenCode" });
+        b.spellings.push_back({ "code", 0 });
+        const auto cs = pv::find_vocabulary_candidates(words({ "open", "code" }), b);
+        check(has(cs, 1, 2, 0) && !has(cs, 0, 2, 0), "a non-spelling outer span still yields only the inner");
+
+        auto c = bias({ "Thewaso" });
+        c.spellings.push_back({ "waso", 0 });
+        const auto around = pv::find_vocabulary_candidates(words({ "the", "waso" }), c);
+        check(has(around, 1, 2, 0) && !has(around, 0, 2, 0),
+              "\"the waso\" still yields only the inner spelling candidate");
+    }
+    {
         // A single non-ASCII character is one code point, not two bytes.
         auto b         = bias({ "Wazuh" });
         b.terms[0].ids = { 20, 21 };
@@ -292,6 +325,20 @@ int main() {
         b.spellings.push_back({ "waso", 0 });
         check(pv::classify_vocabulary_span(words({ "waso" }), b, 0) == 1, "spelling match keeps full boost");
         check(pv::classify_vocabulary_span(words({ "wasu" }), b, 0) == 1, "fuzzy match keeps full boost");
+    }
+    {
+        // A multi-word exact spelling classifies as a match rather than a
+        // swallowed inner span; a non-spelling outer span stays rejected.
+        auto b = bias({ "PostgreSQL" });
+        b.spellings.push_back({ "waso", 0 });
+        b.spellings.push_back({ "wasolog", 0 });
+        check(pv::classify_vocabulary_span(words({ "waso", "log" }), b, 0) == 1,
+              "an outer spelling classifies as a match");
+
+        auto c = bias({ "OpenCode" });
+        c.spellings.push_back({ "code", 0 });
+        check(pv::classify_vocabulary_span(words({ "open", "code" }), c, 0) == -1,
+              "a non-spelling outer span stays rejected");
     }
 
     if (g_failures != 0) {
